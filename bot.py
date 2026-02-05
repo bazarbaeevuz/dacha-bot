@@ -1,3 +1,4 @@
+
 import asyncio
 import os
 import json
@@ -5,22 +6,35 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 
-# ===================== ENV =====================
-BOT_TOKEN = os.getenv("8537176060:AAFwjKqKsWccmtzdbDPAn337X9P8apznc6s")
-ADMIN_ID = int(os.getenv("5523459970", "0"))
-SHEET_ID = os.getenv("1oDsLVUtInYy7_12TD_J9LRInhPvINCpDxzmVz6HhTYY")
+# ===================== 1) SOZLAMALAR (UNIVERSAL) =====================
+# Railway'da Variables bo'lsa - o'sha ishlaydi.
+# Lokal kompyuterda bo'lmasa - pastdagi default qiymatlar ishlaydi.
+
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8537176060:AAFwjKqKsWccmtzdbDPAn337X9P8apznc6s"
+ADMIN_ID = int(os.getenv("ADMIN_ID") or "5523459970")
+SHEET_ID = os.getenv("SHEET_ID") or "1oDsLVUtInYy7_12TD_J9LRInhPvINCpDxzmVz6HhTYY"
+
+# JSON: Railway’da -> GOOGLE_CREDENTIALS variable ichida
+# Lokal -> google_credentials.json fayldan
 GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
+if not GOOGLE_CREDENTIALS:
+    # lokal ishlatish uchun shu fayl bot.py bilan bir papkada tursin
+    with open("google_credentials.json", "r", encoding="utf-8") as f:
+        GOOGLE_CREDENTIALS = f.read()
 
-if not all([BOT_TOKEN, ADMIN_ID, SHEET_ID, GOOGLE_CREDENTIALS]):
-    raise RuntimeError("ENV yo‘q: 8537176060:AAFwjKqKsWccmtzdbDPAn337X9P8apznc6s / 5523459970  / 1oDsLVUtInYy7_12TD_J9LRInhPvINCpDxzmVz6HhTYY / GOOGLE_CREDENTIALS")
+DACHALAR = ["🏡 Dacha 1", "🏠 Dacha 2", "🌴 Dacha 3"]
 
-# ===================== GOOGLE SHEETS =====================
+
+# ===================== 2) GOOGLE SHEETS ULANISH =====================
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
@@ -30,18 +44,18 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(
     json.loads(GOOGLE_CREDENTIALS),
     scope
 )
+
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SHEET_ID).sheet1
 
-# ===================== BOT =====================
+
+# ===================== 3) BOT =====================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+user_data = {}  # vaqtincha user state
 
-user_data = {}
 
-DACHALAR = ["🏡 Dacha 1", "🏠 Dacha 2", "🌴 Dacha 3"]
-
-# ===================== HELPERS =====================
+# ===================== 4) YORDAMCHI FUNKSIYALAR =====================
 def norm(x) -> str:
     return str(x).strip()
 
@@ -51,12 +65,13 @@ def is_date_busy(dacha: str, sana: str) -> bool:
         if (
             norm(row.get("Dacha", "")) == norm(dacha)
             and norm(row.get("Sana", "")) == norm(sana)
-            and norm(row.get("Status", "")).lower() != "bekor"
+            and norm(row.get("Holat", "")).lower() != "bekor"
         ):
             return True
     return False
 
 def append_booking(sana: str, dacha: str, ism: str, telefon: str, user_id: int) -> int:
+    # Ustunlar: Sana | Dacha | Ism | Telefon | Holat | AdminMsgId | UserId
     sheet.append_row([
         sana, dacha, ism, telefon,
         "kutilyapti",  # Holat
@@ -66,23 +81,26 @@ def append_booking(sana: str, dacha: str, ism: str, telefon: str, user_id: int) 
     return len(sheet.get_all_values())
 
 def set_admin_msg_id(row_index: int, msg_id: int):
-    sheet.update_cell(row_index, 6, str(msg_id))  # F ustun
+    # AdminMsgId = 6-ustun (F)
+    sheet.update_cell(row_index, 6, str(msg_id))
 
 def update_status(row_index: int, status: str):
-    sheet.update_cell(row_index, 5, status)  # E ustun
+    # Holat = 5-ustun (E)
+    sheet.update_cell(row_index, 5, status)
 
 def find_row_by_admin_msg_id(admin_msg_id: int):
     rows = sheet.get_all_records()
-    for i, row in enumerate(rows, start=2):
+    for i, row in enumerate(rows, start=2):  # header 1-qatorda
         if norm(row.get("AdminMsgId", "")) == str(admin_msg_id):
             return i, row
     return None, None
 
 
-# ===================== START =====================
+# ===================== 5) /start =====================
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_data.pop(message.from_user.id, None)
+
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=d)] for d in DACHALAR],
         resize_keyboard=True
@@ -90,7 +108,7 @@ async def start(message: types.Message):
     await message.answer("🏡 Dachani tanlang:", reply_markup=kb)
 
 
-# ===================== /jadval (admin) =====================
+# ===================== 6) /jadval (faqat admin) =====================
 @dp.message(Command("jadval"))
 async def jadval(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -111,13 +129,13 @@ async def jadval(message: types.Message):
     await message.answer("\n".join(lines))
 
 
-# ===================== BRON FLOW =====================
+# ===================== 7) BRON FLOW =====================
 @dp.message()
 async def booking(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
 
-    # 1) Dacha
+    # 1) Dacha tanlash
     if uid not in user_data:
         if text not in DACHALAR:
             await message.answer("❗ Dachani tugmadan tanlang.")
@@ -131,12 +149,14 @@ async def booking(message: types.Message):
         sana = text
         dacha = user_data[uid]["dacha"]
 
+        # format tekshiruv
         try:
             datetime.strptime(sana, "%Y-%m-%d")
         except:
             await message.answer("❗ Sana formati xato. Masalan: 2026-02-10")
             return
 
+        # band tekshiruv
         if is_date_busy(dacha, sana):
             await message.answer("❌ Bu sana band. Iltimos boshqa sanani tanlang.")
             user_data.pop(uid, None)
@@ -146,7 +166,7 @@ async def booking(message: types.Message):
         await message.answer("📞 Telefon raqamingizni kiriting:")
         return
 
-    # 3) Telefon -> sheetga yozish + admin tasdiq
+    # 3) Telefon -> sheet + admin tasdiq
     if "telefon" not in user_data[uid]:
         telefon = text
         dacha = user_data[uid]["dacha"]
@@ -180,14 +200,14 @@ async def booking(message: types.Message):
         return
 
 
-# ===================== ADMIN CALLBACK =====================
+# ===================== 8) ADMIN CALLBACK ✅/❌ =====================
 @dp.callback_query()
 async def admin_callback(call: types.CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         await call.answer("Ruxsat yo‘q", show_alert=True)
         return
 
-    action = call.data  # ok / no
+    action = call.data
     admin_msg_id = call.message.message_id
 
     row_index, row = find_row_by_admin_msg_id(admin_msg_id)
@@ -216,7 +236,7 @@ async def admin_callback(call: types.CallbackQuery):
     await call.answer("Noma’lum buyruq", show_alert=True)
 
 
-# ===================== RUN =====================
+# ===================== 9) RUN =====================
 async def main():
     await dp.start_polling(bot)
 
